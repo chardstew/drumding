@@ -237,9 +237,6 @@ class DrumSequencer:
         except Exception as e:
             print('MIDI Port Error:', e)
             self.midi_out = None
-            
-        # keep track of last highlighted pad per track
-        self.last_positions = [None] * len(self.instruments)
 
                 # ── BPM & Slave-Mode Controls ───────────────────
         self.bpm_var   = tk.IntVar(value=120)
@@ -308,10 +305,12 @@ class DrumSequencer:
         self.running = True
         threading.Thread(target=self.run_sequence, daemon=True).start()
 
-    
     def run_sequence(self):
-        global_step = 0
-        HIGHLIGHT   = '#FDE8AC'
+        """Drive all tracks off a single global_step counter, with a moving yellow cursor."""
+        global_step    = 0
+        # one slot per instrument: (row, col, original_bg)
+        last_positions = [None] * len(self.instruments)
+        HIGHLIGHT      = '#FDE8AC'
 
         while self.running:
             start = time.perf_counter()
@@ -319,50 +318,49 @@ class DrumSequencer:
             delay = 60.0 / max(1, bpm) / 4.0
 
             for idx, inst in enumerate(self.instruments):
-                # restore any previously highlighted pad
-                prev = self.last_positions[idx]
+                # ── Restore previous pad ─────────────────────
+                prev = last_positions[idx]
                 if prev:
                     pr, pc, orig_bg = prev
-                    try:
-                        inst.step_buttons[pr][pc].config(bg=orig_bg)
-                    except Exception:
-                        pass
+                    btn = inst.step_buttons[pr][pc]
+                    btn.config(bg=orig_bg)
 
-                note   = inst.get_midi_note()
+                # ── Figure out this track’s current step ────
                 length = inst.sections * 16
-                if note is None or length == 0:
-                    self.last_positions[idx] = None
+                if length == 0:
+                    last_positions[idx] = None
                     continue
 
-                # map the global_step into your 2×32 grid
-                pos     = global_step % length
-                segment = pos // 16
-                r       = segment // 2
-                offset  = (segment % 2) * 16
-                c       = offset + (pos % 16)
+                pos = global_step % length
+                row = pos // 16
+                col = pos % 16
 
+                # guard against odd indexing
                 try:
-                    btn = inst.step_buttons[r][c]
+                    btn = inst.step_buttons[row][col]
                 except IndexError:
-                    self.last_positions[idx] = None
+                    last_positions[idx] = None
                     continue
 
-                orig_bg = btn['bg']
+                # ── Highlight the new pad ───────────────────
+                orig = btn['bg']
                 btn.config(bg=HIGHLIGHT)
-                self.last_positions[idx] = (r, c, orig_bg)
+                last_positions[idx] = (row, col, orig)
 
-                if orig_bg == COLORS['on']:
+                # ── Fire the note if it’s “on” (and not muted) ─
+                if orig != COLORS['disabled'] and inst.get_midi_note() is not None:
+                    note = inst.get_midi_note()
                     self.midi_out.send(mido.Message('note_on',  note=note, velocity=100))
                     self.midi_out.send(mido.Message('note_off', note=note, velocity=100))
 
-            # advance and pace the clock
             global_step += 1
-            elapsed     = time.perf_counter() - start
-            to_sleep    = delay - elapsed
+
+            # ── Wait until next 16th-note, compensating for work time ─
+            elapsed = time.perf_counter() - start
+            to_sleep = delay - elapsed
             if to_sleep > 0:
                 time.sleep(to_sleep)
-
-
+                
     def play_sequence(self):
         if not self.running:
             # ← this line is indented 8 spaces (two levels)
@@ -370,22 +368,9 @@ class DrumSequencer:
             threading.Thread(target=self.run_sequence, daemon=True).start()
 
     def stop_sequence(self):
-        # stop the loop
         self.running = False
-
-        # restore any highlighted pads
-        for idx, prev in enumerate(self.last_positions):
-            if prev:
-                pr, pc, orig_bg = prev
-                try:
-                    self.instruments[idx].step_buttons[pr][pc].config(bg=orig_bg)
-                except Exception:
-                    pass
-        # reset for next time
-        self.last_positions = [None] * len(self.instruments)
-
-        # existing “all notes off” logic
         if self.midi_out:
+            # send All Notes Off on all channels
             for ch in range(16):
                 msg = mido.Message('control_change', channel=ch, control=123, value=0)
                 self.midi_out.send(msg)
