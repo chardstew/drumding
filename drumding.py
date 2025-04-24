@@ -44,15 +44,22 @@ TOTAL_W    = CELL_TOTAL * 32
 
 class InstrumentRow:
     def __init__(self, parent, name, sequencer):
-        self.sequencer   = sequencer
-        self.name        = name
-        self.sections    = 0
-        self.step_buttons = [[], []]
-        self.muted       = False
-        self.muted_backup = []
-        self.sequence_positions = []
+        self.sequencer        = sequencer
+        self.name             = name
 
-        # ── container ────────────────────────────────────────────────
+        # ── DATA STORAGE ───────────────────────────────────────────────
+        # full 64-step pattern: 'off', 'half', 'on', or 'disabled'
+        self.pattern          = ['off'] * 64
+        # each 16-step block can be masked on/off
+        self.segment_mask     = [True, True, False, False]
+        # how far to pan the window (–16…+16)
+        self.shift_offset     = 0
+        # computed for playback: list of (r, c, color) tuples
+        self.sequence_positions = []
+        # mute toggle
+        self.muted            = False
+
+        # ── UI CONTAINER & HEADER ──────────────────────────────────────
         self.frame = tk.Frame(
             parent, bg=COLORS['bg'],
             highlightbackground=COLORS['section_border'],
@@ -63,220 +70,213 @@ class InstrumentRow:
         self.header = tk.Frame(self.frame, bg=COLORS['bg'])
         self.header.pack(fill='x', pady=2)
 
-        # name label
+        # instrument name + mute/solo
         self.name_label = tk.Label(
             self.header, text=name,
             bg=COLORS['bg'], fg=COLORS['text'],
             width=12, anchor='w'
         )
         self.name_label.pack(side='left', padx=(8,0))
-        # binds: double-click to mute, ctrl-click to solo
         self.name_label.bind('<Double-Button-1>', lambda e: self.toggle_mute())
         self.name_label.bind('<Control-Button-1>', lambda e: self.sequencer._solo(self))
 
-        # count label
-        self.label_btn = tk.Button(
-            self.header, text="0/64",
-            bg=COLORS['bg'], fg=COLORS['text'],
-            relief='flat', state='disabled'
-        )
-        self.label_btn.pack(side='left', padx=4)
+        # ── segment-mask buttons ───────────────────────────────────────
+        seg_frame = tk.Frame(self.header, bg=COLORS['bg'])
+        seg_frame.pack(side='left', padx=4)
+        self.seg_btns = []
+        for i in range(4):
+            btn = tk.Button(
+                seg_frame, text=str(i+1),
+                width=2, height=1,
+                bg=('#9D00FF' if self.segment_mask[i] else COLORS['section_border']),
+                fg='white', relief='flat',
+                command=lambda i=i: self.toggle_segment(i)
+            )
+            btn.pack(side='left', padx=1)
+            self.seg_btns.append(btn)
 
-        # “every” dropdown
-        every_btn = tk.Menubutton(
+        # ── pan left/right ─────────────────────────────────────────────
+        self.shift_left_btn = tk.Button(
+            self.header, text='–', width=2, height=1,
+            bg=COLORS['bg'], fg=COLORS['text'], relief='flat',
+            command=lambda: self.shift(-1)
+        )
+        self.shift_left_btn.pack(side='left', padx=(6,0))
+        self.shift_right_btn = tk.Button(
+            self.header, text='+', width=2, height=1,
+            bg=COLORS['bg'], fg=COLORS['text'], relief='flat',
+            command=lambda: self.shift(1)
+        )
+        self.shift_right_btn.pack(side='left')
+
+        # ── “every n” dropdown (unchanged) ─────────────────────────────
+        every = tk.Menubutton(
             self.header, text="every",
             bg=COLORS['bg'], fg=COLORS['blue'],
             relief='flat', direction='below'
         )
-        menu = tk.Menu(every_btn, tearoff=0, bg=COLORS['bg'], fg=COLORS['text'])
-        for n in range(1, 17):
-            menu.add_command(
-                label=str(n),
-                command=lambda n=n: self.apply_every(n)
-            )
-        every_btn.configure(menu=menu)
-        every_btn.pack(side='left', padx=(6,0))
+        menu = tk.Menu(every, tearoff=0, bg=COLORS['bg'], fg=COLORS['text'])
+        for n in range(1,17):
+            menu.add_command(label=str(n), command=lambda n=n: self.apply_every(n))
+        every.configure(menu=menu)
+        every.pack(side='left', padx=(6,0))
 
-        # spacer + note entry + – / +
+        # spacer + note entry + clear bomb
         tk.Frame(self.header, bg=COLORS['bg']).pack(side='left', fill='x', expand=True)
-        self.extend_btn = tk.Button(
-            self.header, text='+', width=2, height=1,
-            bg=COLORS['bg'], fg=COLORS['text'],
-            relief='flat', command=self.extend_section
-        )
-        self.extend_btn.pack(side='right')
-        self.remove_btn = tk.Button(
-            self.header, text='-', width=2, height=1,
-            bg=COLORS['bg'], fg=COLORS['text'],
-            relief='flat', command=self.remove_section
-        )
-        self.remove_btn.pack(side='right', padx=(2,0))
-
         self.note_var = tk.StringVar()
         tk.Entry(
             self.header, textvariable=self.note_var,
             width=4, bg='black', fg='white', justify='left'
         ).pack(side='right', padx=8)
-
         default = DEFAULT_NOTES.get(name)
         if default is not None:
             self.note_var.set(str(default))
-
-        # per-track CLEAR button (bomb)
         self.clear_btn = tk.Button(
-            self.header, text='💣',
-            width=3, height=1,
-            bg=COLORS['bg'], fg=COLORS['red'],
-            relief='flat', command=self.clear_track
+            self.header, text='💣', width=3, height=1,
+            bg=COLORS['bg'], fg=COLORS['red'], relief='flat',
+            command=self.clear_track
         )
         self.clear_btn.pack(side='right', padx=(2,0))
 
-        # grid of 64 hidden buttons
+        # ── build static 2×32 button grid ─────────────────────────────
         self.grid_frame = tk.Frame(self.frame, bg=COLORS['bg'])
         self.grid_frame.pack(anchor='w', padx=6)
         self.row_frames = [tk.Frame(self.grid_frame, bg=COLORS['bg']) for _ in range(2)]
         for rf in self.row_frames:
             rf.pack(anchor='w')
 
-        for idx in range(4):
-            r   = idx // 2
-            off = (idx % 2)*16
-            for i in range(16):
+        self.step_buttons = [[], []]
+        for r in range(2):
+            for c in range(32):
                 b = tk.Button(
                     self.row_frames[r], width=2, height=1,
                     bg=COLORS['off'], relief='flat'
                 )
-                b.grid(row=0, column=off+i, padx=1, pady=1)
-                # full-level toggle on normal click (ignore ctrl)
-                b.bind(
-                    '<Button-1>', 
-                    lambda e, rr=r, cc=off+i: None if (e.state & 0x4) else self._on_toggle(rr,cc)
-                )
-                # half-level on ctrl-click
-                b.bind(
-                    '<Control-Button-1>', 
-                    lambda e, rr=r, cc=off+i: self._on_half(rr,cc)
-                )
-                # disable on double-click
-                b.bind(
-                    '<Double-Button-1>', 
-                    lambda e, rr=r, cc=off+i: self._on_disable(rr,cc)
-                )
+                b.bind('<Button-1>',           lambda e, r=r, c=c: self._on_toggle(r,c))
+                b.bind('<Control-Button-1>',    lambda e, r=r, c=c: self._on_half(r,c))
+                b.bind('<Double-Button-1>',     lambda e, r=r, c=c: self._on_disable(r,c))
                 self.step_buttons[r].append(b)
-        for row in self.step_buttons:
-            for b in row:
-                b.grid_remove()
 
-        # show first 32 steps
-        self.extend_section()
-        self.extend_section()
-
-        # fix height
+        # initial draw + height fix
+        self.refresh_display()
         self.frame.update_idletasks()
         header_h = self.header.winfo_reqheight()
         row_h    = self.row_frames[0].winfo_reqheight()
         self.frame.config(height=header_h + row_h*2 + 8)
 
+    def refresh_display(self):
+        # redraw both rows, but skip row 1 if half_mode is active
+        for r in (0, 1):
+            for c, b in enumerate(self.step_buttons[r]):
+                b.grid_forget()
+                if r == 1 and self.sequencer.half_mode:
+                    continue
+
+                # compute wrapped index
+                raw = r*32 + c - self.shift_offset
+                idx = raw % 64
+
+                # segment-mask check
+                if not self.segment_mask[idx // 16]:
+                    color = COLORS['disabled']
+                else:
+                    state = self.pattern[idx]
+                    color = COLORS.get(state, COLORS['off'])
+
+                b.config(bg=color)
+                b.grid(in_=self.row_frames[r], row=0, column=c, padx=1, pady=1)
+                
+        self.update_positions()
+
+
+
+    def toggle_segment(self, i):
+        self.segment_mask[i] = not self.segment_mask[i]
+        self.seg_btns[i].config(
+            bg=('#9D00FF' if self.segment_mask[i] else COLORS['section_border'])
+        )
+        self.refresh_display()
+
+    def shift(self, amount):
+        self.shift_offset = max(-16, min(16, self.shift_offset + amount))
+        self.refresh_display()
+
     def _on_toggle(self, r, c):
         if self.muted: return
-        b = self.step_buttons[r][c]
-        if b['bg'] == COLORS['disabled']: return
-        new = COLORS['on'] if b['bg']==COLORS['off'] else COLORS['off']
-        b.config(bg=new)
-        self.update_positions()
+        raw = r*32 + c - self.shift_offset
+        idx = raw % 64
+        if self.pattern[idx] == 'disabled': return
+        self.pattern[idx] = 'on' if self.pattern[idx] == 'off' else 'off'
+        self.refresh_display()
 
     def _on_half(self, r, c):
         if self.muted: return
-        b = self.step_buttons[r][c]
-        cur = b['bg']
-        if cur == COLORS['off']:
-            b.config(bg=COLORS['half'])
-        elif cur == COLORS['half']:
-            b.config(bg=COLORS['on'])
-        else:
-            b.config(bg=COLORS['off'])
-        self.update_positions()
+        raw = r*32 + c - self.shift_offset
+        idx = raw % 64
+        cur = self.pattern[idx]
+        self.pattern[idx] = {
+          'off':  'half',
+          'half': 'on',
+          'on':   'off'
+        }[cur]
+        self.refresh_display()
 
     def _on_disable(self, r, c):
         if self.muted: return
-        b = self.step_buttons[r][c]
-        new = COLORS['off'] if b['bg']==COLORS['disabled'] else COLORS['disabled']
-        b.config(bg=new)
-        self.update_positions()
+        raw = r*32 + c - self.shift_offset
+        idx = raw % 64
+        self.pattern[idx] = 'off' if self.pattern[idx]=='disabled' else 'disabled'
+        self.refresh_display()
 
     def clear_track(self):
-        # reset every pad to OFF
-        for row in self.step_buttons:
-            for b in row:
-                b.config(bg=COLORS['off'])
-        self.update_positions()
+        self.pattern = ['off'] * 64
+        self.refresh_display()
+
+    def update_positions(self):
+        pos = []
+        for r in range(2):
+            for c in range(32):
+                idx = r*32 + c - self.shift_offset
+                if 0 <= idx < 64 and self.pattern[idx] != 'disabled' and self.segment_mask[idx//16]:
+                    color = COLORS[self.pattern[idx]] if self.pattern[idx] in ('on','half') else COLORS['off']
+                    pos.append((r, c, color))
+        self.sequence_positions = pos
 
     def get_midi_note(self):
-        # enforce solo
         if self.sequencer.solo_inst and self is not self.sequencer.solo_inst:
             return None
         if self.muted:
             return None
-        try: return int(self.note_var.get())
-        except: return None
-
-    def update_positions(self):
-        pos = []
-        for r,row in enumerate(self.step_buttons):
-            for c,b in enumerate(row):
-                if b.winfo_ismapped() and b['bg'] != COLORS['disabled']:
-                    pos.append((r,c,b['bg']))
-        self.sequence_positions = pos
-
-    def extend_section(self):
-        if self.sections*16 >= MAX_TOTAL_STEPS: return
-        idx = self.sections
-        r   = idx//2
-        off = (idx%2)*16
-        for i in range(16):
-            self.step_buttons[r][off+i].grid()
-        self.sections += 1
-        self.label_btn.config(text=f"{self.sections*16}/{MAX_TOTAL_STEPS}")
-        self.update_positions()
-
-    def remove_section(self):
-        if self.sections == 0: return
-        idx = self.sections - 1
-        r   = idx//2
-        off = (idx%2)*16
-        for i in range(16):
-            self.step_buttons[r][off+i].grid_remove()
-        self.sections -= 1
-        self.label_btn.config(text=f"{self.sections*16}/{MAX_TOTAL_STEPS}")
-        self.update_positions()
+        try:
+            return int(self.note_var.get())
+        except:
+            return None
 
     def toggle_mute(self):
         self.muted = not self.muted
         if self.muted:
-            self.muted_backup = [[b['bg'] for b in row] for row in self.step_buttons]
-            for row in self.step_buttons:
-                for b in row:
+            # gray everything out
+            for r in range(2):
+                for b in self.step_buttons[r]:
                     b.config(bg=COLORS['disabled'])
             self.name_label.config(fg=COLORS['red'])
+            self.sequence_positions = []
         else:
-            for ri,row in enumerate(self.step_buttons):
-                for ci,b in enumerate(row):
-                    try:
-                        b.config(bg=self.muted_backup[ri][ci])
-                    except:
-                        b.config(bg=COLORS['off'])
             self.name_label.config(fg=COLORS['text'])
-        self.update_positions()
+            self.refresh_display()
 
     def apply_every(self, n: int):
         self.update_positions()
-        for idx, (r, c, orig_bg) in enumerate(self.sequence_positions):
-            b = self.step_buttons[r][c]
-            b.config(bg=COLORS['on'] if idx % n == 0 else COLORS['off'])
-        self.update_positions()
+        for idx, (r, c, _) in enumerate(self.sequence_positions):
+            pat_idx = r*32 + c - self.shift_offset
+            self.pattern[pat_idx] = 'on' if idx % n == 0 else 'off'
+        self.refresh_display()
+
+
 
 class DrumSequencer:
     def __init__(self, root):
+        self.half_mode = True   # start in “half” (one‐row) mode
         self.root = root
         self.solo_inst = None
         root.title("Drumding")
@@ -318,18 +318,43 @@ class DrumSequencer:
         )
         bpm_slider.pack(side='left', padx=(0,8))
 
-        btn_cfg = dict(bg=COLORS['bg'], relief='flat',
-                       font=('Fixedsys',14,'bold'), width=3, height=1)
+        btn_cfg = dict(
+            bg=COLORS['bg'],
+            relief='flat',
+            font=('Fixedsys', 14, 'bold'),
+            width=3,
+            height=1,
+            highlightthickness=0,          # kill focus rectangle
+            activebackground=COLORS['bg']  # stop the white flash
+        )
+
         tk.Button(control_bar, text='▶', fg=COLORS['on'],
                   command=self.play_sequence, **btn_cfg).pack(side='left', padx=2)
         tk.Button(control_bar, text='■', fg=COLORS['text'],
                   command=self.stop_sequence, **btn_cfg).pack(side='left', padx=2)
-        tk.Button(control_bar, text='●', fg='red',
-                  command=self.record_sequence, **btn_cfg).pack(side='left', padx=2)
-        tk.Button(control_bar, text='✖', fg=COLORS['text'],
-                  command=self.clear_pattern, **btn_cfg).pack(side='left', padx=2)
+        # half / full toggles
+        self.half_btn = tk.Button(
+            control_bar, text='half',
+            fg=COLORS['blue'],
+            command=self.set_half,
+            **btn_cfg
+        )
+        self.half_btn.pack(side='left', padx=2)
+
+        self.full_btn = tk.Button(
+            control_bar, text='full',
+            fg=COLORS['text'],
+            command=self.set_full,
+            **btn_cfg
+        )
+        self.full_btn.pack(side='left', padx=2)
+
+        
         tk.Button(control_bar, text='💣', fg='red',
                   command=self.factory_reset, **btn_cfg).pack(side='left', padx=2)
+                # start in half-mode with segments 3-4 off
+        self.set_half()
+
 
         # state for timing
         self.running        = False
@@ -440,6 +465,51 @@ class DrumSequencer:
             default = DEFAULT_NOTES.get(inst.name)
             inst.note_var.set(str(default) if default is not None else "")
         print("Factory defaults restored")
+    
+        # ────────────────────────────────────────────────────────────────
+    #   VIEW MODES
+    # ────────────────────────────────────────────────────────────────
+    def set_half(self):
+        """Show one 32-step row per instrument; segments 3–4 are disabled."""
+        self.half_mode = True
+        self.half_btn.config(fg=COLORS['blue'])
+        self.full_btn.config(fg=COLORS['section_border'])   # gray-out “full”
+
+        for inst in self.instruments:
+            # shrink visible height to one row
+            hdr  = inst.header.winfo_reqheight()
+            rowh = inst.row_frames[0].winfo_reqheight()
+            inst.frame.config(height=hdr + rowh + 8)
+
+            # completely disable segments 3 & 4
+            for i in (2, 3):
+                inst.segment_mask[i] = False
+                inst.seg_btns[i].config(state='disabled',
+                                        bg=COLORS['section_border'])
+
+            inst.refresh_display()
+
+    def set_full(self):
+        """Show both 32-step rows; segments 3–4 become user-controllable."""
+        self.half_mode = False
+        self.half_btn.config(fg=COLORS['section_border'])   # gray-out “half”
+        self.full_btn.config(fg=COLORS['blue'])
+
+        for inst in self.instruments:
+            # restore two-row height
+            hdr  = inst.header.winfo_reqheight()
+            rowh = inst.row_frames[0].winfo_reqheight()
+            inst.frame.config(height=hdr + rowh*2 + 8)
+
+            # unlock segments 3 & 4 (they keep their ON/OFF masks)
+            for i in (2, 3):
+                inst.seg_btns[i].config(
+                    state='normal',
+                    bg=('#9D00FF' if inst.segment_mask[i]
+                        else COLORS['section_border'])
+                )
+
+            inst.refresh_display()
 
 if __name__ == '__main__':
     root = tk.Tk()
@@ -448,3 +518,5 @@ if __name__ == '__main__':
     app = DrumSequencer(root)
     root.deiconify()
     root.mainloop()
+
+
