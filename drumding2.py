@@ -62,16 +62,14 @@ class InstrumentRow:
         self.header.pack(fill='x', pady=2)
 
         # name label & count
-        tk.Label(self.header, text=name,
-                 bg=COLORS['bg'], fg=COLORS['text'],
-                 width=12, anchor='w'
-        ).pack(side='left', padx=(8,0))
-        self.label_btn = tk.Button(
-            self.header, text="0/64",
-            bg=COLORS['bg'], fg=COLORS['text'],
-            relief='flat', state='disabled'
-        )
-        self.label_btn.pack(side='left', padx=4)
+        self.name_label = tk.Label(self.header, text=name,
+             bg=COLORS['bg'], fg=COLORS['text'],
+             width=12, anchor='w')
+        self.name_label.pack(side='left', padx=(8,0))
+        # Bind: double-click → mute; Ctrl-click → solo
+        self.name_label.bind('<Double-Button-1>', lambda e, inst=self: inst.toggle_mute())
+        self.name_label.bind('<Control-Button-1>',  lambda e, inst=self: self.sequencer._solo(inst))
+
 
         # “every” dropdown instead of 1–16 buttons
         every_btn = tk.Menubutton(
@@ -215,19 +213,24 @@ class InstrumentRow:
         self.update_positions()
 
     def toggle_mute(self):
+        # flip the flag
         self.muted = not self.muted
-        if self.muted:
-            self.muted_backup = [[b['bg'] for b in row] for row in self.step_buttons]
-            for row in self.step_buttons:
-                for b in row:
-                    b.config(bg=COLORS['disabled'])
+
+        # update label color (red when muted, white when unmuted)
+        self.name_label.config(
+            fg = COLORS['red'] if self.muted else COLORS['text']
+        )
+
+        # refresh solo/mute UI in case a solo is active
+        self.sequencer._solo(self.sequencer.solo_inst)
+        
         else:
-            for ri,row in enumerate(self.step_buttons):
+                for ri,row in enumerate(self.step_buttons):
                 for ci,b in enumerate(row):
                     try:
                         b.config(bg=self.muted_backup[ri][ci])
-                    except:
-                        b.config(bg=COLORS['off'])
+                        except:
+                            b.config(bg=COLORS['off'])
     def apply_every(self, n: int):
         # Turn on every nᵗʰ *visible* pad (step 1, 1+n, 1+2n, …)
         # 1) Refresh our cache of exactly which pads are mapped & enabled:
@@ -247,6 +250,7 @@ class InstrumentRow:
 
 class DrumSequencer:
     def __init__(self, root):
+        self.sequencer = sequencer
         self.root = root
         root.title("Drumding")
         root.configure(bg=COLORS['bg'])
@@ -264,7 +268,7 @@ class DrumSequencer:
         self.instruments = []
         for i,name in enumerate(INSTRUMENTS):
             parent = self.left if i<8 else self.right
-            inst = InstrumentRow(parent, name)
+            inst = InstrumentRow(parent, name, sequencer=self)
             inst.frame.pack(pady=4, anchor='w')
             self.instruments.append(inst)
 
@@ -317,6 +321,15 @@ class DrumSequencer:
     def _do_tick(self):
         H = COLORS['highlight']
         for idx, inst in enumerate(self.instruments):
+
+            # ── SOLO FILTER ─────────────────────────────────────
+            if self.solo_inst is not None and inst is not self.solo_inst:
+                # advance its counter so patterns stay in sync
+                self.step_counters[idx] += 1
+                # clear any glow left behind
+                self.last_positions[idx] = None
+                continue
+
             # restore previous glow
             prev = self.last_positions[idx]
             if prev:
@@ -327,15 +340,6 @@ class DrumSequencer:
             if note is None:
                 self.last_positions[idx] = None
                 continue
-
-            pos = inst.sequence_positions
-            if not pos:
-                self.last_positions[idx] = None
-                continue
-
-            i = self.step_counters[idx] % len(pos)
-            r,c,orig_bg = pos[i]
-            btn = inst.step_buttons[r][c]
 
             # glow
             btn.config(bg=H)
@@ -401,6 +405,24 @@ class DrumSequencer:
             inst.note_var.set(str(default) if default is not None else "")
         print("Factory defaults restored")
 
+    def _solo(self, inst):
+        # toggle solo state
+        if self.solo_inst is inst:
+            self.solo_inst = None
+        else:
+            self.solo_inst = inst
+
+        # update every track’s label color
+        for other in self.instruments:
+            if other.muted:
+                fg = COLORS['red']
+            elif self.solo_inst is None:
+                fg = COLORS['text']
+            elif other is self.solo_inst:
+                fg = COLORS['text']
+            else:
+                fg = COLORS['disabled']
+            other.name_label.config(fg=fg)
 
 
 if __name__ == '__main__':
