@@ -14,7 +14,8 @@ INSTRUMENTS        = [
 
 COLORS = {
     'bg':              'black',
-    'on':              '#00ff00',
+    'on':              '#00ff00',    # full velocity bright green
+    'half':            '#008800',    # half velocity shade
     'off':             '#668866',
     'disabled':        '#111111',
     'section_border':  '#666666',
@@ -42,11 +43,12 @@ CELL_TOTAL = BTN_W + 2
 TOTAL_W    = CELL_TOTAL * 32
 
 class InstrumentRow:
-    def __init__(self, parent, name):
-        self.name         = name
-        self.sections     = 0
+    def __init__(self, parent, name, sequencer):
+        self.sequencer   = sequencer
+        self.name        = name
+        self.sections    = 0
         self.step_buttons = [[], []]
-        self.muted        = False
+        self.muted       = False
         self.muted_backup = []
         self.sequence_positions = []
 
@@ -61,11 +63,18 @@ class InstrumentRow:
         self.header = tk.Frame(self.frame, bg=COLORS['bg'])
         self.header.pack(fill='x', pady=2)
 
-        # name label & count
-        tk.Label(self.header, text=name,
-                 bg=COLORS['bg'], fg=COLORS['text'],
-                 width=12, anchor='w'
-        ).pack(side='left', padx=(8,0))
+        # name label
+        self.name_label = tk.Label(
+            self.header, text=name,
+            bg=COLORS['bg'], fg=COLORS['text'],
+            width=12, anchor='w'
+        )
+        self.name_label.pack(side='left', padx=(8,0))
+        # binds: double-click to mute, ctrl-click to solo
+        self.name_label.bind('<Double-Button-1>', lambda e: self.toggle_mute())
+        self.name_label.bind('<Control-Button-1>', lambda e: self.sequencer._solo(self))
+
+        # count label
         self.label_btn = tk.Button(
             self.header, text="0/64",
             bg=COLORS['bg'], fg=COLORS['text'],
@@ -73,7 +82,7 @@ class InstrumentRow:
         )
         self.label_btn.pack(side='left', padx=4)
 
-        # “every” dropdown instead of 1–16 buttons
+        # “every” dropdown
         every_btn = tk.Menubutton(
             self.header, text="every",
             bg=COLORS['bg'], fg=COLORS['blue'],
@@ -81,7 +90,6 @@ class InstrumentRow:
         )
         menu = tk.Menu(every_btn, tearoff=0, bg=COLORS['bg'], fg=COLORS['text'])
         for n in range(1, 17):
-            # when you choose n, build the pattern every n steps
             menu.add_command(
                 label=str(n),
                 command=lambda n=n: self.apply_every(n)
@@ -91,38 +99,39 @@ class InstrumentRow:
 
         # spacer + note entry + – / +
         tk.Frame(self.header, bg=COLORS['bg']).pack(side='left', fill='x', expand=True)
-        self.extend_btn = tk.Button(self.header, text='+', width=2, height=1,
-                                    bg=COLORS['bg'], fg=COLORS['text'],
-                                    relief='flat', command=self.extend_section)
+        self.extend_btn = tk.Button(
+            self.header, text='+', width=2, height=1,
+            bg=COLORS['bg'], fg=COLORS['text'],
+            relief='flat', command=self.extend_section
+        )
         self.extend_btn.pack(side='right')
-        self.remove_btn = tk.Button(self.header, text='-', width=2, height=1,
-                                    bg=COLORS['bg'], fg=COLORS['text'],
-                                    relief='flat', command=self.remove_section)
+        self.remove_btn = tk.Button(
+            self.header, text='-', width=2, height=1,
+            bg=COLORS['bg'], fg=COLORS['text'],
+            relief='flat', command=self.remove_section
+        )
         self.remove_btn.pack(side='right', padx=(2,0))
 
         self.note_var = tk.StringVar()
-        tk.Entry(self.header, textvariable=self.note_var,
-                 width=4, bg='black', fg='white', justify='left'
+        tk.Entry(
+            self.header, textvariable=self.note_var,
+            width=4, bg='black', fg='white', justify='left'
         ).pack(side='right', padx=8)
-        
-        
 
         default = DEFAULT_NOTES.get(name)
         if default is not None:
             self.note_var.set(str(default))
-            
-        # ── per-track CLEAR button ────────────────────────
+
+        # per-track CLEAR button (bomb)
         self.clear_btn = tk.Button(
             self.header, text='💣',
             width=3, height=1,
             bg=COLORS['bg'], fg=COLORS['red'],
-            relief='flat',
-            command=self.clear_track
+            relief='flat', command=self.clear_track
         )
         self.clear_btn.pack(side='right', padx=(2,0))
 
-
-        # ── grid of 64 hidden buttons ───────────────────────────────
+        # grid of 64 hidden buttons
         self.grid_frame = tk.Frame(self.frame, bg=COLORS['bg'])
         self.grid_frame.pack(anchor='w', padx=6)
         self.row_frames = [tk.Frame(self.grid_frame, bg=COLORS['bg']) for _ in range(2)]
@@ -138,8 +147,21 @@ class InstrumentRow:
                     bg=COLORS['off'], relief='flat'
                 )
                 b.grid(row=0, column=off+i, padx=1, pady=1)
-                b.bind('<Button-1>',        lambda e, rr=r, cc=off+i: self._on_toggle(rr,cc))
-                b.bind('<Double-Button-1>', lambda e, rr=r, cc=off+i: self._on_disable(rr,cc))
+                # full-level toggle on normal click (ignore ctrl)
+                b.bind(
+                    '<Button-1>', 
+                    lambda e, rr=r, cc=off+i: None if (e.state & 0x4) else self._on_toggle(rr,cc)
+                )
+                # half-level on ctrl-click
+                b.bind(
+                    '<Control-Button-1>', 
+                    lambda e, rr=r, cc=off+i: self._on_half(rr,cc)
+                )
+                # disable on double-click
+                b.bind(
+                    '<Double-Button-1>', 
+                    lambda e, rr=r, cc=off+i: self._on_disable(rr,cc)
+                )
                 self.step_buttons[r].append(b)
         for row in self.step_buttons:
             for b in row:
@@ -155,19 +177,46 @@ class InstrumentRow:
         row_h    = self.row_frames[0].winfo_reqheight()
         self.frame.config(height=header_h + row_h*2 + 8)
 
+    def _on_toggle(self, r, c):
+        if self.muted: return
+        b = self.step_buttons[r][c]
+        if b['bg'] == COLORS['disabled']: return
+        new = COLORS['on'] if b['bg']==COLORS['off'] else COLORS['off']
+        b.config(bg=new)
+        self.update_positions()
+
+    def _on_half(self, r, c):
+        if self.muted: return
+        b = self.step_buttons[r][c]
+        cur = b['bg']
+        if cur == COLORS['off']:
+            b.config(bg=COLORS['half'])
+        elif cur == COLORS['half']:
+            b.config(bg=COLORS['on'])
+        else:
+            b.config(bg=COLORS['off'])
+        self.update_positions()
+
+    def _on_disable(self, r, c):
+        if self.muted: return
+        b = self.step_buttons[r][c]
+        new = COLORS['off'] if b['bg']==COLORS['disabled'] else COLORS['disabled']
+        b.config(bg=new)
+        self.update_positions()
+
     def clear_track(self):
-        # Clear all ON-green and re-enable any disabled pads in this row."""
+        # reset every pad to OFF
         for row in self.step_buttons:
             for b in row:
-            # reset _every_ pad to OFF, regardless of disabled state
                 b.config(bg=COLORS['off'])
         self.update_positions()
 
-    
-
-
     def get_midi_note(self):
-        if self.muted: return None
+        # enforce solo
+        if self.sequencer.solo_inst and self is not self.sequencer.solo_inst:
+            return None
+        if self.muted:
+            return None
         try: return int(self.note_var.get())
         except: return None
 
@@ -201,19 +250,6 @@ class InstrumentRow:
         self.label_btn.config(text=f"{self.sections*16}/{MAX_TOTAL_STEPS}")
         self.update_positions()
 
-    def _on_toggle(self, r, c):
-        if self.muted: return
-        b = self.step_buttons[r][c]
-        if b['bg'] == COLORS['disabled']: return
-        b.config(bg = COLORS['on'] if b['bg']==COLORS['off'] else COLORS['off'])
-        self.update_positions()
-
-    def _on_disable(self, r, c):
-        if self.muted: return
-        b = self.step_buttons[r][c]
-        b.config(bg = COLORS['off'] if b['bg']==COLORS['disabled'] else COLORS['disabled'])
-        self.update_positions()
-
     def toggle_mute(self):
         self.muted = not self.muted
         if self.muted:
@@ -221,6 +257,7 @@ class InstrumentRow:
             for row in self.step_buttons:
                 for b in row:
                     b.config(bg=COLORS['disabled'])
+            self.name_label.config(fg=COLORS['red'])
         else:
             for ri,row in enumerate(self.step_buttons):
                 for ci,b in enumerate(row):
@@ -228,26 +265,20 @@ class InstrumentRow:
                         b.config(bg=self.muted_backup[ri][ci])
                     except:
                         b.config(bg=COLORS['off'])
-    def apply_every(self, n: int):
-        # Turn on every nᵗʰ *visible* pad (step 1, 1+n, 1+2n, …)
-        # 1) Refresh our cache of exactly which pads are mapped & enabled:
+            self.name_label.config(fg=COLORS['text'])
         self.update_positions()
 
-        # 2) Walk that list in order, turning step 1, 1+n, 1+2n… ON, the rest OFF.
+    def apply_every(self, n: int):
+        self.update_positions()
         for idx, (r, c, orig_bg) in enumerate(self.sequence_positions):
             b = self.step_buttons[r][c]
-            # idx % n == 0 ⇒ this is step 1, 1+n, 1+2n, …
-            if idx % n == 0:
-                b.config(bg=COLORS['on'])
-            else:
-                b.config(bg=COLORS['off'])
-
-        # 3) Re-cache, so your sequencer thread sees the new pattern immediately:
+            b.config(bg=COLORS['on'] if idx % n == 0 else COLORS['off'])
         self.update_positions()
 
 class DrumSequencer:
     def __init__(self, root):
         self.root = root
+        self.solo_inst = None
         root.title("Drumding")
         root.configure(bg=COLORS['bg'])
         self.container = tk.Frame(root, bg=COLORS['bg'])
@@ -264,7 +295,7 @@ class DrumSequencer:
         self.instruments = []
         for i,name in enumerate(INSTRUMENTS):
             parent = self.left if i<8 else self.right
-            inst = InstrumentRow(parent, name)
+            inst = InstrumentRow(parent, name, self)
             inst.frame.pack(pady=4, anchor='w')
             self.instruments.append(inst)
 
@@ -300,7 +331,6 @@ class DrumSequencer:
         tk.Button(control_bar, text='💣', fg='red',
                   command=self.factory_reset, **btn_cfg).pack(side='left', padx=2)
 
-
         # state for timing
         self.running        = False
         self.next_time      = None
@@ -313,6 +343,19 @@ class DrumSequencer:
         root.bind('s',      lambda e: self.stop_sequence())
         root.bind('r',      lambda e: self.record_sequence())
         root.bind('c',      lambda e: self.clear_pattern())
+
+    def _solo(self, inst):
+        # toggle solo on/off
+        if self.solo_inst is inst:
+            self.solo_inst = None
+        else:
+            self.solo_inst = inst
+        # update label colors
+        for row in self.instruments:
+            if self.solo_inst and row is not self.solo_inst:
+                row.name_label.config(fg=COLORS['section_border'])
+            else:
+                row.name_label.config(fg=COLORS['text'])
 
     def _do_tick(self):
         H = COLORS['highlight']
@@ -343,10 +386,11 @@ class DrumSequencer:
             fade_ms = int(self.delay*1000*0.8)
             self.root.after(fade_ms, lambda b=btn, col=orig_bg: b.config(bg=col))
 
-            # send MIDI if it was “on”
-            if orig_bg == COLORS['on'] and self.midi_out:
-                self.midi_out.send(mido.Message('note_on',  note=note, velocity=100))
-                self.midi_out.send(mido.Message('note_off', note=note, velocity=100))
+            # send MIDI with full or half velocity
+            if self.midi_out and orig_bg in (COLORS['on'], COLORS['half']):
+                vel = 100 if orig_bg==COLORS['on'] else 50
+                self.midi_out.send(mido.Message('note_on',  note=note, velocity=vel))
+                self.midi_out.send(mido.Message('note_off', note=note, velocity=vel))
 
             self.step_counters[idx] += 1
 
@@ -354,7 +398,6 @@ class DrumSequencer:
         if not self.running:
             return
         now = time.perf_counter()
-        # catch up on any missed ticks
         while self.next_time <= now:
             self._do_tick()
             self.next_time += self.delay
@@ -370,13 +413,11 @@ class DrumSequencer:
 
     def stop_sequence(self):
         self.running = False
-        # clear glows
         for idx,prev in enumerate(self.last_positions):
             if prev:
                 pr,pc,orig = prev
                 self.instruments[idx].step_buttons[pr][pc].config(bg=orig)
         self.last_positions = [None]*len(self.instruments)
-        # all-notes-off
         if self.midi_out:
             for ch in range(16):
                 self.midi_out.send(mido.Message('control_change', channel=ch, control=123, value=0))
@@ -394,14 +435,11 @@ class DrumSequencer:
         print("Pattern cleared")
 
     def factory_reset(self):
-        # Wipe every track’s pattern AND restore its default note."""
         for inst in self.instruments:
-            inst.clear_track()   # clear ON/disabled pads
+            inst.clear_track()
             default = DEFAULT_NOTES.get(inst.name)
             inst.note_var.set(str(default) if default is not None else "")
         print("Factory defaults restored")
-
-
 
 if __name__ == '__main__':
     root = tk.Tk()
