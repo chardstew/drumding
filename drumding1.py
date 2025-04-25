@@ -1,4 +1,5 @@
 import tkinter as tk
+from tkinter import messagebox
 import mido
 import time
 
@@ -70,12 +71,16 @@ class InstrumentRow:
         self.header = tk.Frame(self.frame, bg=COLORS['bg'])
         self.header.pack(fill='x', pady=2)
 
-        # instrument name + mute/solo
+        # Update track name label styling
         self.name_label = tk.Label(
             self.header, text=name,
-            bg=COLORS['bg'], fg=COLORS['text'],
+            bg=COLORS['bg'], fg=COLORS['text'],  # Same background/foreground as the popup
+            font=('Fixedsys', 12),  # Fixedsys font, 12 size (similar to popup label)
             width=12, anchor='w'
         )
+        self.name_label.pack(side='left', padx=(8, 0))
+        self.name_label.bind('<Double-Button-1>', lambda e: self.toggle_mute())
+        self.name_label.bind('<Control-Button-1>', lambda e: self.sequencer._solo(self))
         self.name_label.pack(side='left', padx=(8,0))
         self.name_label.bind('<Double-Button-1>', lambda e: self.toggle_mute())
         self.name_label.bind('<Control-Button-1>', lambda e: self.sequencer._solo(self))
@@ -86,47 +91,73 @@ class InstrumentRow:
         self.seg_btns = []
         for i in range(4):
             btn = tk.Button(
-                seg_frame, text=str(i+1),
+                seg_frame, text=str(i + 1),
                 width=2, height=1,
                 bg=('#9D00FF' if self.segment_mask[i] else COLORS['section_border']),
-                fg='white', relief='flat',
+                fg=COLORS['text'], relief='flat',
+                font=('Fixedsys', 12),  # Fixedsys font with size 12
                 command=lambda i=i: self.toggle_segment(i)
             )
             btn.pack(side='left', padx=1)
             self.seg_btns.append(btn)
 
-        # ── pan left/right ─────────────────────────────────────────────
+        # Minus and Plus Buttons for shifting
         self.shift_left_btn = tk.Button(
             self.header, text='–', width=2, height=1,
             bg=COLORS['bg'], fg=COLORS['text'], relief='flat',
+            font=('Fixedsys', 12),  # Fixedsys font with size 12
             command=lambda: self.shift(-1)
         )
-        self.shift_left_btn.pack(side='left', padx=(6,0))
+        self.shift_left_btn.pack(side='left', padx=(6, 0))
+
         self.shift_right_btn = tk.Button(
             self.header, text='+', width=2, height=1,
             bg=COLORS['bg'], fg=COLORS['text'], relief='flat',
+            font=('Fixedsys', 12),  # Fixedsys font with size 12
             command=lambda: self.shift(1)
         )
         self.shift_right_btn.pack(side='left')
 
-        # ── “every n” dropdown (unchanged) ─────────────────────────────
+        # Update "every" dropdown menu styling
         every = tk.Menubutton(
             self.header, text="every",
-            bg=COLORS['bg'], fg=COLORS['blue'],
-            relief='flat', direction='below'
+            bg=COLORS['bg'], fg=COLORS['blue'],  # Matching background and text colors
+            relief='flat', direction='below',
+            font=('Fixedsys', 12)  # Use Fixedsys font with size 12 for consistency
         )
-        menu = tk.Menu(every, tearoff=0, bg=COLORS['bg'], fg=COLORS['text'])
-        for n in range(1,17):
-            menu.add_command(label=str(n), command=lambda n=n: self.apply_every(n))
+
+        # Create the menu
+        menu = tk.Menu(every, tearoff=0, bg=COLORS['bg'], fg=COLORS['text'], font=('Fixedsys', 12))
+
+        # Add menu items
+        for n in range(1, 17):  # Add options 1-16 to the menu
+            menu.add_command(
+                label=str(n),
+                command=lambda n=n: self.apply_every(n)
+            )
+
+        # Configure each menu item with appropriate colors
+        for item in menu.winfo_children():
+            item.config(
+                bg=COLORS['bg'],  # Background color for the menu
+                fg=COLORS['text'],  # Text color for the menu items
+                activebackground=COLORS['highlight'],  # Highlight color when an item is selected
+                activeforeground=COLORS['text'],  # Text color when an item is selected
+            )
+
+        # Attach the menu to the Menubutton
         every.configure(menu=menu)
-        every.pack(side='left', padx=(6,0))
+        every.pack(side='left', padx=(6, 0))
+
+
 
         # spacer + note entry + clear bomb
         tk.Frame(self.header, bg=COLORS['bg']).pack(side='left', fill='x', expand=True)
         self.note_var = tk.StringVar()
         tk.Entry(
             self.header, textvariable=self.note_var,
-            width=4, bg='black', fg='white', justify='left'
+            width=4, bg='black', fg='white', justify='left',
+            font=('Fixedsys', 12)  # Fixedsys font with size 12
         ).pack(side='right', padx=8)
         default = DEFAULT_NOTES.get(name)
         if default is not None:
@@ -300,7 +331,7 @@ class DrumSequencer:
         self.undo_stack  = [] 
         self.root = root
         self.solo_inst = None
-        root.title("Drumding")
+        root.title("drumding")
         root.configure(bg=COLORS['bg'])
         self.container = tk.Frame(root, bg=COLORS['bg'])
         self.container.pack(fill='both', expand=True)
@@ -481,11 +512,45 @@ class DrumSequencer:
         print("Pattern cleared")
 
     def factory_reset(self):
-        for inst in self.instruments:
-            inst.clear_track()
-            default = DEFAULT_NOTES.get(inst.name)
-            inst.note_var.set(str(default) if default is not None else "")
-        print("Factory defaults restored")
+        # Custom pop-up confirmation dialog
+        def on_yes():
+            # Reset each instrument's track
+            for inst in self.instruments:
+                inst.pattern = ['off'] * 64  # Reset the track for each instrument
+            
+            print("Factory reset complete")
+            for inst in self.instruments:
+                inst.refresh_display()  # Refresh display for each instrument
+            popup.destroy()  # Close the custom popup
+
+        def on_no():
+            popup.destroy()  # Close the popup without doing anything
+
+        # Create a custom pop-up window
+        popup = tk.Toplevel(self.root)
+        popup.title("drumding")
+        popup.configure(bg=COLORS['bg'])  # Match the background color to your GUI
+        popup.geometry('150x150')  # Set the size of the popup window
+
+        # Message in the pop-up
+        label = tk.Label(popup, text="you sure?", 
+                         bg=COLORS['bg'], fg=COLORS['text'], font=('Fixedsys', 12))
+        label.pack(pady=20)
+
+        # Buttons for Yes and No
+        yes_button = tk.Button(popup, text="yes", fg=COLORS['text'], bg=COLORS['blue'], 
+                               command=on_yes, relief='flat', font=('Fixedsys', 12))
+        yes_button.pack(side='left', padx=20, pady=10)
+        
+        no_button = tk.Button(popup, text="no", fg=COLORS['text'], bg=COLORS['blue'], 
+                              command=on_no, relief='flat', font=('Fixedsys', 12))
+        no_button.pack(side='right', padx=20, pady=10)
+
+        popup.grab_set()  # Make the popup modal (user can't interact with the main window until it's closed)
+        popup.transient(self.root)  # Make the popup window attached to the main window
+        self.root.wait_window(popup)  # Wait for the popup to close
+
+
     def set_half(self):
         self.half_mode = True
         self.half_btn.config(fg=COLORS['blue'])
@@ -567,5 +632,6 @@ if __name__ == '__main__':
     app = DrumSequencer(root)
     root.deiconify()
     root.mainloop()
+
 
 
