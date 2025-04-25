@@ -1,0 +1,4 @@
+add safety to factory reset bomb
+
+still having issues with shifting of full 64 step grid/slots/steps
+
