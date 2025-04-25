@@ -209,8 +209,13 @@ class InstrumentRow:
     def _on_toggle(self, r, c):
         if self.muted: return
         raw = r*32 + c - self.shift_offset
-        idx = raw % 64                        # ← wrap here
-        if self.pattern[idx]=='disabled': return
+        idx = raw % 64
+        if self.pattern[idx] == 'disabled': return
+
+        # record undo
+        self.sequencer.undo_stack.append((self, idx, self.pattern[idx]))
+
+        # do the toggle
         self.pattern[idx] = 'on' if self.pattern[idx]=='off' else 'off'
         self.refresh_display()
 
@@ -219,18 +224,27 @@ class InstrumentRow:
         if self.muted: return
         raw = r*32 + c - self.shift_offset
         idx = raw % 64
-        cur = self.pattern[idx]
+
+        # record undo
+        self.sequencer.undo_stack.append((self, idx, self.pattern[idx]))
+
+        # cycle off→half→on→off
         self.pattern[idx] = {
-          'off':  'half',
-          'half': 'on',
-          'on':   'off'
-        }[cur]
+            'off':  'half',
+            'half': 'on',
+            'on':   'off'
+        }[self.pattern[idx]]
         self.refresh_display()
 
     def _on_disable(self, r, c):
         if self.muted: return
         raw = r*32 + c - self.shift_offset
         idx = raw % 64
+
+        # record undo
+        self.sequencer.undo_stack.append((self, idx, self.pattern[idx]))
+
+        # flip disabled
         self.pattern[idx] = 'off' if self.pattern[idx]=='disabled' else 'disabled'
         self.refresh_display()
 
@@ -283,6 +297,7 @@ class InstrumentRow:
 class DrumSequencer:
     def __init__(self, root):
         self.half_mode = True   # start in “half” (one‐row) mode
+        self.undo_stack  = [] 
         self.root = root
         self.solo_inst = None
         root.title("Drumding")
@@ -476,12 +491,6 @@ class DrumSequencer:
         self.half_btn.config(fg=COLORS['blue'])
         self.full_btn.config(fg=COLORS['text'])
         for inst in self.instruments:
-            # mask only segments 1 & 2
-            inst.segment_mask = [True, True, False, False]
-            # update the segment-button colors
-            for i, btn in enumerate(inst.seg_btns):
-                btn.config(bg=('#9D00FF' if inst.segment_mask[i] else COLORS['section_border']))
-            # resize to one row
             hdr  = inst.header.winfo_reqheight()
             rowh = inst.row_frames[0].winfo_reqheight()
             inst.frame.config(height=hdr + rowh + 8)
@@ -492,16 +501,22 @@ class DrumSequencer:
         self.half_btn.config(fg=COLORS['text'])
         self.full_btn.config(fg=COLORS['blue'])
         for inst in self.instruments:
-            # enable all four segments
+            # also enable all segments here if you like:
             inst.segment_mask = [True, True, True, True]
-            # update the segment-button colors
             for i, btn in enumerate(inst.seg_btns):
                 btn.config(bg='#9D00FF')
-            # resize to two rows
+
             hdr  = inst.header.winfo_reqheight()
             rowh = inst.row_frames[0].winfo_reqheight()
             inst.frame.config(height=hdr + rowh*2 + 8)
             inst.refresh_display()
+            
+    def undo_last(self):
+        if not self.undo_stack:
+            return
+        inst, idx, old = self.undo_stack.pop()
+        inst.pattern[idx] = old
+        inst.refresh_display()
 
 
         # ────────────────────────────────────────────────────────────────
@@ -552,4 +567,5 @@ if __name__ == '__main__':
     app = DrumSequencer(root)
     root.deiconify()
     root.mainloop()
+
 
