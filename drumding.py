@@ -165,19 +165,16 @@ class InstrumentRow:
         self.frame.config(height=header_h + row_h*2 + 8)
 
     def refresh_display(self):
-        # redraw both rows, but skip row 1 if half_mode is active
-        for r in (0, 1):
+        for r in (0,1):
             for c, b in enumerate(self.step_buttons[r]):
                 b.grid_forget()
                 if r == 1 and self.sequencer.half_mode:
                     continue
 
-                # compute wrapped index
-                raw = r*32 + c - self.shift_offset
-                idx = raw % 64
+                idx = r*32 + c
 
-                # segment-mask check
-                if not self.segment_mask[idx // 16]:
+
+                if not self.segment_mask[idx//16]:
                     color = COLORS['disabled']
                 else:
                     state = self.pattern[idx]
@@ -185,8 +182,9 @@ class InstrumentRow:
 
                 b.config(bg=color)
                 b.grid(in_=self.row_frames[r], row=0, column=c, padx=1, pady=1)
-                
+
         self.update_positions()
+
 
 
 
@@ -198,16 +196,24 @@ class InstrumentRow:
         self.refresh_display()
 
     def shift(self, amount):
-        self.shift_offset = max(-16, min(16, self.shift_offset + amount))
+        if amount > 0:
+            # rotate right by one
+            self.pattern.insert(0, self.pattern.pop())
+        else:
+            # rotate left by one
+            self.pattern.append(self.pattern.pop(0))
         self.refresh_display()
+
+
 
     def _on_toggle(self, r, c):
         if self.muted: return
         raw = r*32 + c - self.shift_offset
-        idx = raw % 64
-        if self.pattern[idx] == 'disabled': return
-        self.pattern[idx] = 'on' if self.pattern[idx] == 'off' else 'off'
+        idx = raw % 64                        # ← wrap here
+        if self.pattern[idx]=='disabled': return
+        self.pattern[idx] = 'on' if self.pattern[idx]=='off' else 'off'
         self.refresh_display()
+
 
     def _on_half(self, r, c):
         if self.muted: return
@@ -465,28 +471,48 @@ class DrumSequencer:
             default = DEFAULT_NOTES.get(inst.name)
             inst.note_var.set(str(default) if default is not None else "")
         print("Factory defaults restored")
-    
-        # ────────────────────────────────────────────────────────────────
-    #   VIEW MODES
-    # ────────────────────────────────────────────────────────────────
     def set_half(self):
-        """Show one 32-step row per instrument; segments 3–4 are disabled."""
         self.half_mode = True
         self.half_btn.config(fg=COLORS['blue'])
-        self.full_btn.config(fg=COLORS['section_border'])   # gray-out “full”
-
+        self.full_btn.config(fg=COLORS['text'])
         for inst in self.instruments:
-            # shrink visible height to one row
             hdr  = inst.header.winfo_reqheight()
             rowh = inst.row_frames[0].winfo_reqheight()
             inst.frame.config(height=hdr + rowh + 8)
+            inst.refresh_display()
 
-            # completely disable segments 3 & 4
-            for i in (2, 3):
-                inst.segment_mask[i] = False
-                inst.seg_btns[i].config(state='disabled',
-                                        bg=COLORS['section_border'])
+    def set_full(self):
+        self.half_mode = False
+        self.half_btn.config(fg=COLORS['text'])
+        self.full_btn.config(fg=COLORS['blue'])
+        for inst in self.instruments:
+            # also enable all segments here if you like:
+            inst.segment_mask = [True, True, True, True]
+            for i, btn in enumerate(inst.seg_btns):
+                btn.config(bg='#9D00FF')
 
+            hdr  = inst.header.winfo_reqheight()
+            rowh = inst.row_frames[0].winfo_reqheight()
+            inst.frame.config(height=hdr + rowh*2 + 8)
+            inst.refresh_display()
+
+        # ────────────────────────────────────────────────────────────────
+    #   VIEW MODES
+    # ────────────────────────────────────────────────────────────────
+    def set_full(self):
+        self.half_mode = False
+        self.half_btn.config(fg=COLORS['text'])
+        self.full_btn.config(fg=COLORS['blue'])
+        
+        for inst in self.instruments:
+            # ─── enable all 4 segments ───────────────────
+            inst.segment_mask = [True, True, True, True]
+            for i, btn in enumerate(inst.seg_btns):
+                btn.config(bg='#9D00FF')
+            # ─── resize for two rows ──────────────────────
+            hdr  = inst.header.winfo_reqheight()
+            rowh = inst.row_frames[0].winfo_reqheight()
+            inst.frame.config(height=hdr + rowh*2 + 8)
             inst.refresh_display()
 
     def set_full(self):
@@ -518,5 +544,4 @@ if __name__ == '__main__':
     app = DrumSequencer(root)
     root.deiconify()
     root.mainloop()
-
 
